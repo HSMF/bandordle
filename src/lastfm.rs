@@ -3,7 +3,7 @@ use std::fmt::Write;
 use md5::{Digest, Md5};
 use serde::de::DeserializeOwned;
 
-use crate::lastfm::api_types::TopAlbums;
+use crate::lastfm::api_types::{TopAlbums, TopArtists};
 
 pub mod api_types;
 
@@ -89,5 +89,15 @@ impl Client {
             .await?
             .into_result()
             .map_err(Error::Api)
+    }
+
+    pub async fn get_top_artists(&self, user: &str) -> Result<TopArtists, Error> {
+        self.make_request::<api_types::GetTopArtistsResponse>(
+            "user.getTopArtists",
+            [("user", user)],
+        )
+        .await?
+        .into_result()
+        .map_err(Error::Api)
     }
 }

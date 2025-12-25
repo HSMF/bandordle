@@ -100,19 +100,39 @@ pub enum Period {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename = "artist")]
-pub struct Artist {
+pub struct AlbumArtist {
     name: String,
     mbid: String,
     url: Url,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageSize {
     Small,
     Medium,
     Large,
     Extralarge,
+    Mega,
+    Unknown(String),
+}
+
+impl<'de> Deserialize<'de> for ImageSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        use ImageSize::{Extralarge, Large, Medium, Mega, Small};
+        Ok(match s.as_str() {
+            "small" => Small,
+            "medium" => Medium,
+            "large" => Large,
+            "mega" => Mega,
+            "extralarge" => Extralarge,
+            _ => Self::Unknown(s),
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -133,7 +153,21 @@ pub struct Album {
     pub playcount: i64,
     pub mbid: String,
     pub url: Url,
-    pub artist: Artist,
+    pub artist: AlbumArtist,
+    #[serde(rename = "$value")]
+    pub images: Vec<Image>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename = "artist")]
+pub struct Artist {
+    #[serde(rename = "@rank")]
+    pub rank: i64,
+    pub name: String,
+    pub playcount: i64,
+    pub mbid: String,
+    pub url: Url,
+    pub streamable: bool,
     #[serde(rename = "$value")]
     pub images: Vec<Image>,
 }
@@ -149,7 +183,19 @@ pub struct TopAlbums {
     pub albums: Vec<Album>,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename = "topartists")]
+pub struct TopArtists {
+    #[serde(rename = "@user")]
+    pub user: String,
+
+    #[serde(rename = "$value")]
+    pub artists: Vec<Artist>,
+}
+
 pub type GetTopAlbumsResponse = LfmStatus<TopAlbums>;
+
+pub type GetTopArtistsResponse = LfmStatus<TopArtists>;
 
 #[cfg(test)]
 mod tests {
@@ -159,6 +205,13 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use quick_xml::de::from_str;
+
+    fn i(size: ImageSize, url: &str) -> Image {
+        Image {
+            size,
+            url: url.into(),
+        }
+    }
 
     #[test]
     fn status_failed() {
@@ -224,12 +277,6 @@ mod tests {
 </topalbums>"#,
         )
         .expect("can parse");
-        fn i(size: ImageSize, url: &str) -> Image {
-            Image {
-                size,
-                url: url.into(),
-            }
-        }
         assert_eq!(
             x,
             TopAlbums {
@@ -242,7 +289,7 @@ mod tests {
                     url: "http://www.last.fm/music/Dream+Theater/Images+and+Words"
                         .parse()
                         .unwrap(),
-                    artist: Artist {
+                    artist: AlbumArtist {
                         name: "Dream Theater".into(),
                         mbid: "28503ab7-8bf2-4666-a7bd-2644bfc7cb1d".into(),
                         url: "http://www.last.fm/music/Dream+Theater".parse().unwrap()
@@ -255,5 +302,43 @@ mod tests {
                 }]
             }
         );
+    }
+
+    #[test]
+    fn user_get_top_artists() {
+        let x: TopArtists = from_str(
+            r#"<topartists user="RJ" type="overall">
+  <artist rank="1">
+    <name>Dream Theater</name>
+    <playcount>1337</playcount>
+    <mbid>28503ab7-8bf2-4666-a7bd-2644bfc7cb1d</mbid>
+    <url>http://www.last.fm/music/Dream+Theater</url>
+    <streamable>1</streamable>
+    <image size="small">...</image>
+    <image size="medium">...</image>
+    <image size="large">...</image>
+  </artist>
+</topartists>"#,
+        )
+        .expect("can parse");
+        assert_eq!(
+            x,
+            TopArtists {
+                user: "RJ".into(),
+                artists: vec![Artist {
+                    rank: 1,
+                    name: "Dream Theater".into(),
+                    playcount: 1337,
+                    mbid: "28503ab7-8bf2-4666-a7bd-2644bfc7cb1d".into(),
+                    url: "http://www.last.fm/music/Dream+Theater".parse().unwrap(),
+                    streamable: true,
+                    images: vec![
+                        i(ImageSize::Small, "..."),
+                        i(ImageSize::Medium, "..."),
+                        i(ImageSize::Large, "..."),
+                    ]
+                }]
+            }
+        )
     }
 }

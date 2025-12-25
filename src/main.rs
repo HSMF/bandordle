@@ -179,6 +179,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(root))
         .route("/api/v1/newgame", post(newgame))
+        .route("/api/v1/newgame-album", post(newgame_album))
         .route("/api/v1/guess", post(guess))
         .route("/api/v1/top-albums", get(get_top_albums))
         .route("/signin", get(signin))
@@ -252,19 +253,9 @@ struct NewGameResult {
     len: Vec<usize>,
 }
 
-async fn newgame(State(state): State<SharedState>) -> Result<Json<NewGameResult>, AppError> {
-    let resp = state
-        .lastfm
-        .get_top_albums("hydehsmf")
-        .await
-        .map_err(AppError::LastFmError)?;
+fn pick_word(it: impl IntoIterator<Item = String>) -> Result<(Vec<String>, Vec<usize>), AppError> {
     let mut rng = rand::rng();
-    let word = resp
-        .albums
-        .into_iter()
-        .map(|x| x.name)
-        .choose(&mut rng)
-        .ok_or(AppError::NoAlbums)?;
+    let word = it.into_iter().choose(&mut rng).ok_or(AppError::NoAlbums)?;
     let word: String = word
         .chars()
         .filter_map(|ch| match ch {
@@ -276,6 +267,33 @@ async fn newgame(State(state): State<SharedState>) -> Result<Json<NewGameResult>
         .collect();
     let words: Vec<_> = word.split_whitespace().map(ToOwned::to_owned).collect();
     let len = words.iter().map(|x| x.len()).collect();
+    Ok((words, len))
+}
+
+async fn newgame(State(state): State<SharedState>) -> Result<Json<NewGameResult>, AppError> {
+    log::info!("creating new game (artist)");
+    let resp = state
+        .lastfm
+        .get_top_artists("hydehsmf")
+        .await
+        .map_err(AppError::LastFmError)?;
+    let (words, len) = pick_word(resp.artists.into_iter().map(|x| x.name))?;
+
+    let id = Uuid::new_v4();
+    let state = &mut state.mutable.write().unwrap();
+
+    state.db.insert(id, Mutex::new(SessionState::new(words)));
+    Ok(Json(NewGameResult { id, len }))
+}
+
+async fn newgame_album(State(state): State<SharedState>) -> Result<Json<NewGameResult>, AppError> {
+    log::info!("creating new game (album)");
+    let resp = state
+        .lastfm
+        .get_top_albums("hydehsmf")
+        .await
+        .map_err(AppError::LastFmError)?;
+    let (words, len) = pick_word(resp.albums.into_iter().map(|x| x.name))?;
 
     let id = Uuid::new_v4();
     let state = &mut state.mutable.write().unwrap();

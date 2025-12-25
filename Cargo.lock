@@ -87,6 +87,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dotenvy",
+ "log",
  "md-5",
  "pretty_assertions",
  "quick-xml",
