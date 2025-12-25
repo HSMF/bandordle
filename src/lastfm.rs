@@ -70,8 +70,6 @@ impl Client {
             .await
             .map_err(Http)?;
 
-        // http://localhost:3000/signin?token=8RivCLKsLAaK8144S3C8OyllSq9d4-Bu
-
         quick_xml::de::from_str(&resp).map_err(Decoding)
     }
 

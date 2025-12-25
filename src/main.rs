@@ -169,8 +169,6 @@ async fn main() {
         lastfm,
     };
 
-    // ZMAC0-5khEKj-24kvmsnKdv1V_O2QqwX
-
     let app = Router::new()
         .route("/", get(root))
         .route("/api/v1/newgame", post(newgame))
