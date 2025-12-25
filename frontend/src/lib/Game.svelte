@@ -5,34 +5,41 @@
 
   const { initialId, initialLen } = $props();
 
-  type Guess = {
+  type GuessedWord = {
     guess: string;
     grade: Grade[];
   };
+  type Guess = GuessedWord[];
   let previousGuesses: Guess[] = $state([]);
 
+  function newArr(lengths: number[]) {
+    return lengths.map((l: number) => new Array(l).fill(undefined));
+  }
+
   // svelte-ignore state_referenced_locally
-  let cells: (string | undefined)[] = $state(
-    new Array(initialLen).fill(undefined),
-  );
+  let cells: (string | undefined)[][] = $state(newArr(initialLen));
   let selectedCell = $state(0);
 
-  function isLetter(ch: string) {
-    return ch.length === 1 && ch.match(/[a-zA-Z]/);
+  function allowedChar(ch: string) {
+    return ch.length === 1 && ch.match(/[a-zA-Z1-9]/);
   }
 
   function lockInGuess() {
-    if (cells.includes(undefined)) {
+    if (cells.findIndex((x) => x.includes(undefined)) >= 0) {
       return;
     }
 
-    const guess = cells.join("");
+    const guess = cells.map((x) => x.join("")).join(" ");
     makeGuess(initialId, guess).then(({ grade }) => {
-      previousGuesses.push({
-        grade,
-        guess,
-      });
-      cells = new Array(initialLen).fill(undefined);
+      const splitGuess = guess.split(/\s+/);
+      previousGuesses.push(
+        grade.map((grade, i) => {
+          const guess = splitGuess[i];
+          return { grade, guess };
+        }),
+      );
+
+      cells = newArr(initialLen);
       selectedCell = 0;
     });
   }
@@ -49,6 +56,23 @@
         return "bg-yellow-600";
     }
   }
+
+  function effectiveIndex(wordIdx: number, inWordIdx: number) {
+    const before = cells.slice(0, wordIdx);
+    return before.map((x) => x.length).reduce((a, b) => a + b, 0) + inWordIdx;
+  }
+
+  function actualIndex(sel: number) {
+    let i = 0;
+    while (sel > 0 && i < cells.length) {
+      if (sel < cells[i].length) {
+        return [i, sel];
+      }
+      sel -= cells[i].length;
+      i++;
+    }
+    return [i, sel];
+  }
 </script>
 
 <svelte:window
@@ -56,13 +80,24 @@
     const key = event.key.toLowerCase();
     if (key === "backspace") {
       selectedCell = Math.max(selectedCell - 1, 0);
-      cells[selectedCell] = undefined;
-    } else if (key === "enter") {
+      const [wordIdx, i] = actualIndex(selectedCell);
+      cells[wordIdx][i] = undefined;
+      return;
+    }
+    if (key === "enter") {
       lockInGuess();
-    } else if (isLetter(key) && selectedCell < cells.length) {
-      cells[selectedCell] = key;
+      return;
+    }
+    const [wordIdx, i] = actualIndex(selectedCell);
+    if (
+      allowedChar(key) &&
+      wordIdx < cells.length &&
+      i < cells[wordIdx].length
+    ) {
+      cells[wordIdx][i] = key;
       selectedCell++;
     }
+    console.log({ selectedCell });
   }}
 />
 
@@ -87,18 +122,26 @@
 <div>
   <div class="flex flex-col gap-1">
     {#each previousGuesses as prev}
-      <div class="flex gap-1">
-        {#each prev.guess.split("") as ch, i}
-          {@render Cell(ch, -1, () => {}, prev.grade[i])}
+      <div class="flex gap-8">
+        {#each prev as word}
+          <div class="flex gap-1">
+            {#each word.guess.split("") as ch, i}
+              {@render Cell(ch, -1, () => {}, word.grade[i])}
+            {/each}
+          </div>
         {/each}
       </div>
     {/each}
 
-    <div class="flex gap-1">
-      {#each cells as cell, i}
-        {@render Cell(cell, i, () => {
-          selectedCell = i;
-        })}
+    <div class="flex gap-8">
+      {#each cells as word, wordIdx}
+        <div class="flex gap-1">
+          {#each word as cell, i}
+            {@render Cell(cell, effectiveIndex(wordIdx, i), () => {
+              selectedCell = effectiveIndex(wordIdx, i);
+            })}
+          {/each}
+        </div>
       {/each}
     </div>
   </div>

@@ -19,6 +19,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 pub mod lastfm;
+const MAX_GUESSES: usize = 6;
 
 struct Config {
     lastfm_apikey: String,
@@ -40,8 +41,8 @@ struct AppState {
 
 #[derive(Clone)]
 struct SessionState {
-    word: String,
-    guesses: Vec<String>,
+    words: Vec<String>,
+    num_guesses: usize,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -56,6 +57,8 @@ pub enum AppError {
     MissingParam(&'static str),
     #[error("user has no albums")]
     NoAlbums,
+    #[error("too many guesses")]
+    TooManyGuesses,
 }
 
 impl IntoResponse for AppError {
@@ -69,6 +72,7 @@ impl IntoResponse for AppError {
             AppError::NoAlbums | AppError::MissingParam(_) | AppError::GradingError(_) => {
                 StatusCode::BAD_REQUEST
             }
+            AppError::TooManyGuesses => StatusCode::FORBIDDEN,
             AppError::LastFmError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (
@@ -93,49 +97,52 @@ pub enum Grade {
 
 #[derive(thiserror::Error, Debug, Serialize, TS)]
 pub enum GradingError {
-    #[error("Wrong Length (expected {0}, have {1})")]
+    #[error("Wrong length (expected {0}, have {1})")]
     WrongLength(usize, usize),
+    #[error("Wrong number of words (expected {0}, have {1})")]
+    WrongNumberOfWords(usize, usize),
 }
 
-impl SessionState {
-    fn new(word: String) -> Self {
-        Self {
-            word,
-            guesses: Vec::new(),
+fn grade(expected: &str, guess: &str) -> Result<Vec<Grade>, GradingError> {
+    if expected.len() != guess.len() {
+        return Err(GradingError::WrongLength(expected.len(), guess.len()));
+    }
+
+    let mut word: Vec<_> = guess.chars().map(Some).collect();
+    let mut expected: Vec<_> = expected.chars().map(Some).collect();
+
+    let mut ret = vec![Grade::Incorrect; expected.len()];
+
+    for (i, (w, e)) in word.iter_mut().zip(expected.iter_mut()).enumerate() {
+        if w == e {
+            ret[i] = Grade::Correct;
+            *w = None;
+            *e = None;
         }
     }
 
-    fn grade(&self, guess: &str) -> Result<Vec<Grade>, GradingError> {
-        if self.word.len() != guess.len() {
-            return Err(GradingError::WrongLength(self.word.len(), guess.len()));
+    for (i, w) in word.iter().enumerate() {
+        if w.is_none() {
+            continue;
         }
-        let mut word: Vec<_> = guess.chars().map(Some).collect();
-        let mut expected: Vec<_> = self.word.chars().map(Some).collect();
-
-        let mut ret = vec![Grade::Incorrect; self.word.len()];
-
-        for (i, (w, e)) in word.iter_mut().zip(expected.iter_mut()).enumerate() {
+        for e in expected.iter_mut() {
             if w == e {
-                ret[i] = Grade::Correct;
-                *w = None;
+                ret[i] = Grade::WrongPlace;
                 *e = None;
+                break;
             }
         }
+    }
 
-        for (i, w) in word.iter().enumerate() {
-            if w.is_none() {
-                continue;
-            }
-            for e in expected.iter_mut() {
-                if w == e {
-                    ret[i] = Grade::WrongPlace;
-                    *e = None;
-                    break;
-                }
-            }
+    Ok(ret)
+}
+
+impl SessionState {
+    fn new(words: Vec<String>) -> Self {
+        Self {
+            words,
+            num_guesses: 0,
         }
-
-        Ok(ret)
     }
 }
 
@@ -242,7 +249,7 @@ async fn get_top_albums(
 #[ts(export)]
 struct NewGameResult {
     id: Uuid,
-    len: usize,
+    len: Vec<usize>,
 }
 
 async fn newgame(State(state): State<SharedState>) -> Result<Json<NewGameResult>, AppError> {
@@ -258,13 +265,22 @@ async fn newgame(State(state): State<SharedState>) -> Result<Json<NewGameResult>
         .map(|x| x.name)
         .choose(&mut rng)
         .ok_or(AppError::NoAlbums)?;
-    let word = word.to_lowercase().replace(' ', "");
+    let word: String = word
+        .chars()
+        .filter_map(|ch| match ch {
+            'a'..='z' | '0'..='9' => Some(ch),
+            'A'..='Z' => Some(ch.to_ascii_lowercase()),
+            ch if ch.is_whitespace() => Some(ch),
+            _ => None,
+        })
+        .collect();
+    let words: Vec<_> = word.split_whitespace().map(ToOwned::to_owned).collect();
+    let len = words.iter().map(|x| x.len()).collect();
 
     let id = Uuid::new_v4();
     let state = &mut state.mutable.write().unwrap();
 
-    let len = word.len();
-    state.db.insert(id, Mutex::new(SessionState::new(word)));
+    state.db.insert(id, Mutex::new(SessionState::new(words)));
     Ok(Json(NewGameResult { id, len }))
 }
 
@@ -277,25 +293,54 @@ struct GuessArgs {
 #[derive(Serialize, TS)]
 #[ts(export)]
 struct GuessResult {
-    grade: Vec<Grade>,
+    grade: Vec<Vec<Grade>>,
 }
 
 async fn guess(
     State(full_state): State<SharedState>,
     Json(guess): Json<GuessArgs>,
 ) -> Result<Json<GuessResult>, AppError> {
-    let grade = {
-        let state = &full_state.mutable.read().unwrap();
-        let state = state.db.get(&guess.id).ok_or(AppError::NoSession)?;
-        let state = state.lock().unwrap();
-        state.grade(&guess.guess).map_err(AppError::GradingError)?
-    };
+    fn inner(
+        full_state: &SharedState,
+        guess: GuessArgs,
+        should_delete: &mut bool,
+    ) -> Result<GuessResult, AppError> {
+        let words: Vec<_> = guess.guess.split_whitespace().collect();
+        let st = full_state.mutable.read().unwrap();
+        let state = st.db.get(&guess.id).ok_or(AppError::NoSession)?;
+        let mut state = state.lock().unwrap();
 
-    if grade.iter().all(|x| *x == Grade::Correct) {
-        full_state.mutable.write().unwrap().db.remove(&guess.id);
+        if state.words.len() != words.len() {
+            return Err(AppError::GradingError(GradingError::WrongNumberOfWords(
+                state.words.len(),
+                words.len(),
+            )));
+        }
+
+        let grade = state
+            .words
+            .iter()
+            .zip(words)
+            .map(|(expected, word)| grade(expected, word))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::GradingError)?;
+
+        state.num_guesses += 1;
+        *should_delete =
+            state.num_guesses > MAX_GUESSES || grade.iter().flatten().all(|x| *x == Grade::Correct);
+
+        Ok(GuessResult { grade })
     }
 
-    Ok(Json(GuessResult { grade }))
+    let mut should_delete = false;
+    let id = guess.id;
+    let ret = inner(&full_state, guess, &mut should_delete)?;
+
+    if should_delete {
+        full_state.mutable.write().unwrap().db.remove(&id);
+    }
+
+    Ok(Json(ret))
 }
 
 async fn root() -> &'static str {
