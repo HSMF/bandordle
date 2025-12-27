@@ -1,0 +1,11 @@
+[package]
+name = "lastfm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+md-5 = "0.10.6"
+quick-xml = { version = "0.38.4", features = ["serialize"] }
+serde = { version = "1.0.228", features = ["derive"] }
+reqwest = "0.12.28"
+thiserror = "2.0.17"

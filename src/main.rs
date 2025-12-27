@@ -18,7 +18,6 @@ use tower_http::cors::CorsLayer;
 use ts_rs::TS;
 use uuid::Uuid;
 
-pub mod lastfm;
 const MAX_GUESSES: usize = 6;
 
 struct Config {
@@ -52,7 +51,7 @@ pub enum AppError {
     #[error("{0}")]
     GradingError(GradingError),
     #[error("something went wrong while contacting LastFM: {0}")]
-    LastFmError(lastfm::Error),
+    LastFm(lastfm::Error),
     #[error("missing parameter {0}")]
     MissingParam(&'static str),
     #[error("user has no albums")]
@@ -73,7 +72,7 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST
             }
             AppError::TooManyGuesses => StatusCode::FORBIDDEN,
-            AppError::LastFmError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::LastFm(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (
             status,
@@ -240,9 +239,10 @@ async fn get_top_albums(
 ) -> impl IntoResponse {
     state
         .lastfm
-        .get_top_albums(query.get("user").ok_or(AppError::MissingParam("user"))?)
+        .top_albums(query.get("user").ok_or(AppError::MissingParam("user"))?)
+        .send()
         .await
-        .map_err(AppError::LastFmError)
+        .map_err(AppError::LastFm)
         .map(Json)
 }
 
@@ -274,9 +274,10 @@ async fn newgame(State(state): State<SharedState>) -> Result<Json<NewGameResult>
     log::info!("creating new game (artist)");
     let resp = state
         .lastfm
-        .get_top_artists("hydehsmf")
+        .top_artists("hydehsmf")
+        .send()
         .await
-        .map_err(AppError::LastFmError)?;
+        .map_err(AppError::LastFm)?;
     let (words, len) = pick_word(resp.artists.into_iter().map(|x| x.name))?;
 
     let id = Uuid::new_v4();
@@ -290,9 +291,10 @@ async fn newgame_album(State(state): State<SharedState>) -> Result<Json<NewGameR
     log::info!("creating new game (album)");
     let resp = state
         .lastfm
-        .get_top_albums("hydehsmf")
+        .top_albums("hydehsmf")
+        .send()
         .await
-        .map_err(AppError::LastFmError)?;
+        .map_err(AppError::LastFm)?;
     let (words, len) = pick_word(resp.albums.into_iter().map(|x| x.name))?;
 
     let id = Uuid::new_v4();

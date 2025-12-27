@@ -6,14 +6,17 @@ edition = "2024"
 [dependencies]
 axum = "0.8.8"
 dotenvy = "0.15.7"
+lastfm = { version = "0.1.0", path = "crates/lastfm" }
 log = "0.4.29"
-md-5 = "0.10.6"
-quick-xml = { version = "0.38.4", features = ["serialize"] }
 rand = "0.9.2"
-reqwest = "0.12.28"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.146"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "derive", "macros"] }
+sqlx = { version = "0.8.6", features = [
+    "runtime-tokio",
+    "sqlite",
+    "derive",
+    "macros",
+] }
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["full"] }
 tower-http = { version = "0.6.8", features = ["cors"] }
@@ -23,3 +26,6 @@ uuid = { version = "1.19.0", features = ["serde", "v4"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+
+[workspace]
+members = ["crates/lastfm"]

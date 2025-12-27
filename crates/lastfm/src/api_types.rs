@@ -97,10 +97,23 @@ pub enum Period {
     #[serde(rename = "12month")]
     TwelveMonth,
 }
+impl Display for Period {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Period::Overall => "overall",
+            Period::SevenDay => "7day",
+            Period::OneMonth => "1month",
+            Period::ThreeMonth => "3month",
+            Period::SixMonth => "6month",
+            Period::TwelveMonth => "12month",
+        };
+        write!(f, "{s}")
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename = "artist")]
-pub struct AlbumArtist {
+pub struct ShortArtist {
     name: String,
     mbid: String,
     url: Url,
@@ -153,7 +166,7 @@ pub struct Album {
     pub playcount: i64,
     pub mbid: String,
     pub url: Url,
-    pub artist: AlbumArtist,
+    pub artist: ShortArtist,
     #[serde(rename = "$value")]
     pub images: Vec<Image>,
 }
@@ -168,6 +181,21 @@ pub struct Artist {
     pub mbid: String,
     pub url: Url,
     pub streamable: bool,
+    #[serde(rename = "$value")]
+    pub images: Vec<Image>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename = "artist")]
+pub struct Track {
+    #[serde(rename = "@rank")]
+    pub rank: i64,
+    pub name: String,
+    pub playcount: i64,
+    pub mbid: String,
+    pub url: Url,
+    pub streamable: bool,
+    pub artist: ShortArtist,
     #[serde(rename = "$value")]
     pub images: Vec<Image>,
 }
@@ -193,9 +221,120 @@ pub struct TopArtists {
     pub artists: Vec<Artist>,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename = "toptracks")]
+pub struct TopTracks {
+    #[serde(rename = "@user")]
+    pub user: String,
+
+    #[serde(rename = "$value")]
+    pub artists: Vec<Track>,
+}
+
+pub mod chart {
+    use super::*;
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[serde(rename = "wiki")]
+    pub struct Wiki {
+        published: String,
+        summary: String,
+        content: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[serde(rename = "artists")]
+    pub struct Artist {
+        name: String,
+        playcount: i64,
+        listeners: i64,
+        mbid: String,
+        url: Url,
+        streamable: bool,
+        #[serde(rename = "$value")]
+        images: Vec<Image>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[serde(rename = "tag")]
+    pub struct Tag {
+        name: String,
+        url: Url,
+        reach: i64,
+        taggings: i64,
+        streamable: bool,
+        wiki: Wiki,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[serde(rename = "track")]
+    pub struct Track {
+        name: String,
+        playcount: i64,
+        listeners: i64,
+        mbid: Option<String>,
+        url: Url,
+        streamable: bool,
+        artist: ShortArtist,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[serde(rename = "artists")]
+    pub struct TopArtists {
+        #[serde(rename = "@page")]
+        page: usize,
+        #[serde(rename = "@perPage")]
+        per_page: usize,
+        #[serde(rename = "@totalPages")]
+        total_pages: usize,
+        #[serde(rename = "@total")]
+        total: usize,
+        #[serde(rename = "$value")]
+        artists: Vec<Artist>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[serde(rename = "tags")]
+    pub struct TopTags {
+        #[serde(rename = "@page")]
+        page: usize,
+        #[serde(rename = "@perPage")]
+        per_page: usize,
+        #[serde(rename = "@totalPages")]
+        total_pages: usize,
+        #[serde(rename = "@total")]
+        total: usize,
+
+        tags: Vec<Tag>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[serde(rename = "tags")]
+    pub struct TopTracks {
+        #[serde(rename = "@page")]
+        page: usize,
+        #[serde(rename = "@perPage")]
+        per_page: usize,
+        #[serde(rename = "@totalPages")]
+        total_pages: usize,
+        #[serde(rename = "@total")]
+        total: usize,
+
+        tags: Vec<Track>,
+    }
+
+    pub type GetTopArtistsResponse = LfmStatus<TopArtists>;
+
+    pub type GetTopTagsResponse = LfmStatus<TopTags>;
+
+    pub type GetTopTracksResponse = LfmStatus<TopTracks>;
+}
+
 pub type GetTopAlbumsResponse = LfmStatus<TopAlbums>;
 
 pub type GetTopArtistsResponse = LfmStatus<TopArtists>;
+
+pub type GetTopTracksResponse = LfmStatus<TopTracks>;
 
 #[cfg(test)]
 mod tests {
@@ -289,7 +428,7 @@ mod tests {
                     url: "http://www.last.fm/music/Dream+Theater/Images+and+Words"
                         .parse()
                         .unwrap(),
-                    artist: AlbumArtist {
+                    artist: ShortArtist {
                         name: "Dream Theater".into(),
                         mbid: "28503ab7-8bf2-4666-a7bd-2644bfc7cb1d".into(),
                         url: "http://www.last.fm/music/Dream+Theater".parse().unwrap()
@@ -340,5 +479,10 @@ mod tests {
                 }]
             }
         )
+    }
+
+    #[test]
+    fn display_period() {
+        assert_eq!(Period::Overall.to_string(), "overall");
     }
 }
