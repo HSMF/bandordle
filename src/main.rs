@@ -1,6 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
+    path::Path,
     sync::{Arc, Mutex, RwLock},
 };
 
@@ -14,7 +15,7 @@ use axum::{
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
-use tower_http::cors::CorsLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -26,11 +27,16 @@ struct Config {
 }
 
 #[derive(Clone)]
+struct WordList(&'static [HashSet<&'static str>]);
+
+#[derive(Clone)]
 struct SharedState {
     mutable: Arc<RwLock<AppState>>,
     config: Arc<Config>,
     pool: SqlitePool,
     lastfm: Arc<lastfm::Client>,
+
+    word_list: WordList,
 }
 
 #[derive(Default)]
@@ -48,6 +54,8 @@ struct SessionState {
 pub enum AppError {
     #[error("no such session")]
     NoSession,
+    #[error("I don't know the word {0}")]
+    UnknownWord(String),
     #[error("{0}")]
     GradingError(GradingError),
     #[error("something went wrong while contacting LastFM: {0}")]
@@ -68,9 +76,10 @@ impl IntoResponse for AppError {
         }
         let status = match &self {
             AppError::NoSession => StatusCode::NOT_FOUND,
-            AppError::NoAlbums | AppError::MissingParam(_) | AppError::GradingError(_) => {
-                StatusCode::BAD_REQUEST
-            }
+            AppError::UnknownWord(..)
+            | AppError::NoAlbums
+            | AppError::MissingParam(..)
+            | AppError::GradingError(..) => StatusCode::BAD_REQUEST,
             AppError::TooManyGuesses => StatusCode::FORBIDDEN,
             AppError::LastFm(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -145,6 +154,28 @@ impl SessionState {
     }
 }
 
+impl WordList {
+    fn new(path: impl AsRef<Path>) -> Self {
+        let s = std::fs::read_to_string(path).expect("cannot read wordlist");
+
+        let max_len = s.lines().map(|x| x.len()).max().expect("wordlist is empty");
+
+        let s = s.to_lowercase().leak();
+
+        let mut v = vec![HashSet::new(); max_len + 1];
+
+        for line in s.lines() {
+            v[line.len()].insert(line);
+        }
+
+        Self(Box::leak(v.into_boxed_slice()))
+    }
+
+    fn contains(&self, w: &str) -> bool {
+        self.0.get(w.len()).is_some_and(|list| list.contains(w))
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -173,6 +204,7 @@ async fn main() {
         config: Arc::clone(&config),
         pool,
         lastfm,
+        word_list: WordList::new("./wordlist.txt"),
     };
 
     let app = Router::new()
@@ -182,7 +214,8 @@ async fn main() {
         .route("/api/v1/guess", post(guess))
         .route("/api/v1/top-albums", get(get_top_albums))
         .route("/signin", get(signin))
-        .route("/authenticate", get(authenticate))
+        // .route("/authenticate", get(authenticate))
+        .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
                 .allow_headers(tower_http::cors::Any)
@@ -255,7 +288,14 @@ struct NewGameResult {
 
 fn pick_word(it: impl IntoIterator<Item = String>) -> Result<(Vec<String>, Vec<usize>), AppError> {
     let mut rng = rand::rng();
-    let word = it.into_iter().choose(&mut rng).ok_or(AppError::NoAlbums)?;
+    let word = it
+        .into_iter()
+        .filter(|word| {
+            word.chars()
+                .any(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9'))
+        })
+        .choose(&mut rng)
+        .ok_or(AppError::NoAlbums)?;
     let word: String = word
         .chars()
         .filter_map(|ch| match ch {
@@ -270,11 +310,20 @@ fn pick_word(it: impl IntoIterator<Item = String>) -> Result<(Vec<String>, Vec<u
     Ok((words, len))
 }
 
-async fn newgame(State(state): State<SharedState>) -> Result<Json<NewGameResult>, AppError> {
+// TODO: temporary until we have users
+#[derive(Serialize, Deserialize)]
+struct NewGameQuery {
+    user: Option<String>,
+}
+
+async fn newgame(
+    Query(query): Query<NewGameQuery>,
+    State(state): State<SharedState>,
+) -> Result<Json<NewGameResult>, AppError> {
     log::info!("creating new game (artist)");
     let resp = state
         .lastfm
-        .top_artists("hydehsmf")
+        .top_artists(query.user.as_deref().unwrap_or("hydehsmf"))
         .send()
         .await
         .map_err(AppError::LastFm)?;
@@ -341,9 +390,13 @@ async fn guess(
             .words
             .iter()
             .zip(words)
-            .map(|(expected, word)| grade(expected, word))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(AppError::GradingError)?;
+            .map(|(expected, word)| {
+                if expected != word && !full_state.word_list.contains(word) {
+                    return Err(AppError::UnknownWord(word.to_owned()));
+                }
+                grade(expected, word).map_err(AppError::GradingError)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         state.num_guesses += 1;
         *should_delete =

@@ -3,6 +3,10 @@
     import Game from "./lib/Game.svelte";
 </script>
 
+<svelte:head>
+    <title>Bandordle</title>
+</svelte:head>
+
 <main class="p-16">
     <div class="flex justify-center items-center h-full">
         {#await startNewGame()}

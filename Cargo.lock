@@ -871,6 +871,7 @@ name = "lastfm"
 version = "0.1.0"
 dependencies = [
  "md-5",
+ "pretty_assertions",
  "quick-xml",
  "reqwest",
  "serde",
@@ -2109,6 +2110,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

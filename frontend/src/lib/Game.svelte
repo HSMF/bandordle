@@ -12,6 +12,8 @@
   type Guess = GuessedWord[];
   let previousGuesses: Guess[] = $state([]);
 
+  let error: string | undefined = $state(undefined);
+
   function newArr(lengths: number[]) {
     return lengths.map((l: number) => new Array(l).fill(undefined));
   }
@@ -30,7 +32,8 @@
     }
 
     const guess = cells.map((x) => x.join("")).join(" ");
-    makeGuess(initialId, guess).then(({ grade }) => {
+    makeGuess(initialId, guess)
+    .then(({ grade }) => {
       const splitGuess = guess.split(/\s+/);
       previousGuesses.push(
         grade.map((grade, i) => {
@@ -41,7 +44,10 @@
 
       cells = newArr(initialLen);
       selectedCell = 0;
-    });
+      error = undefined
+    })
+    .catch((x) => { error = x.message ?? "oh no" })
+    ;
   }
 
   function gradeColor(grade: Grade | undefined) {
@@ -49,7 +55,7 @@
       case undefined:
         return undefined;
       case "Incorrect":
-        return "bg-gray-600";
+        return "bg-gray-600 text-white";
       case "Correct":
         return "bg-green-600";
       case "WrongPlace":
@@ -120,6 +126,11 @@
 {/snippet}
 
 <div>
+
+  {#if error !== undefined}
+    <div class="text-red-500">{error}</div>
+  {/if}
+
   <div class="flex flex-col gap-1">
     {#each previousGuesses as prev}
       <div class="flex gap-8">
