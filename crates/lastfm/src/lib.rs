@@ -1,3 +1,12 @@
+//! # Last.fm API bindings
+//!
+//!
+//! ## Usage Example
+//!
+//! ```
+//! let client = Client::new(shared_secret, api_key);
+//! ```
+
 use std::fmt::Write;
 
 use md5::{Digest, Md5};
