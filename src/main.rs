@@ -8,12 +8,19 @@ use std::{
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::{HeaderValue, StatusCode},
+    http::{
+        HeaderValue, StatusCode,
+        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+    },
     response::{IntoResponse, Redirect},
     routing::{get, post},
 };
+use axum_extra::extract::{CookieJar, cookie::Cookie};
+use hmac::{Hmac, Mac};
+use jwt::{SignWithKey as _, VerifyWithKey as _};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
+use sha2::Sha512;
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use ts_rs::TS;
@@ -24,6 +31,7 @@ const MAX_GUESSES: usize = 6;
 struct Config {
     lastfm_apikey: String,
     auth_callback_url: String,
+    jwt_key: Hmac<Sha512>,
 }
 
 #[derive(Clone)]
@@ -66,6 +74,25 @@ pub enum AppError {
     NoAlbums,
     #[error("too many guesses")]
     TooManyGuesses,
+    #[error("internal server error")]
+    Internal(Box<dyn std::error::Error>),
+    #[error("no user to fetch data for")]
+    NoUser,
+}
+
+impl AppError {
+    fn internal<E>(e: E) -> AppError
+    where
+        E: std::error::Error + 'static,
+    {
+        AppError::Internal(Box::new(e))
+    }
+}
+
+impl From<lastfm::Error> for AppError {
+    fn from(value: lastfm::Error) -> Self {
+        AppError::LastFm(value)
+    }
 }
 
 impl IntoResponse for AppError {
@@ -74,15 +101,22 @@ impl IntoResponse for AppError {
         struct ErrorResponse {
             message: String,
         }
+
         let status = match &self {
             AppError::NoSession => StatusCode::NOT_FOUND,
             AppError::UnknownWord(..)
             | AppError::NoAlbums
+            | AppError::NoUser
             | AppError::MissingParam(..)
             | AppError::GradingError(..) => StatusCode::BAD_REQUEST,
             AppError::TooManyGuesses => StatusCode::FORBIDDEN,
-            AppError::LastFm(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::LastFm(_) | AppError::Internal(..) => StatusCode::INTERNAL_SERVER_ERROR,
         };
+
+        if let AppError::Internal(ref e) = self {
+            log::error!("interal server error {e}");
+        }
+
         (
             status,
             Json(ErrorResponse {
@@ -188,6 +222,7 @@ async fn main() {
     let config = Arc::new(Config {
         lastfm_apikey: var("LASTFM_APIKEY"),
         auth_callback_url: var("AUTH_CALLBACK_URL"),
+        jwt_key: Hmac::new_from_slice(var("JWT_KEY").as_bytes()).expect("create new key"),
     });
     let mutable = Default::default();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL is set");
@@ -213,12 +248,13 @@ async fn main() {
         .route("/api/v1/newgame-album", post(newgame_album))
         .route("/api/v1/guess", post(guess))
         .route("/api/v1/top-albums", get(get_top_albums))
-        .route("/signin", get(signin))
-        // .route("/authenticate", get(authenticate))
+        .route("/api/v1/signin", get(signin))
+        .route("/api/v1/auth-url", get(get_auth_url))
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
-                .allow_headers(tower_http::cors::Any)
+                .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE])
+                .allow_credentials(true)
                 .allow_origin("http://localhost:5173".parse::<HeaderValue>().unwrap()),
         )
         .with_state(state);
@@ -227,26 +263,55 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn authenticate(State(state): State<SharedState>) -> Redirect {
+async fn get_auth_url(State(state): State<SharedState>) -> String {
     let api_key = &state.config.lastfm_apikey;
     let cb = &state.config.auth_callback_url;
-    Redirect::to(&format!(
-        "http://www.last.fm/api/auth/?api_key={api_key}&cb={cb}"
-    ))
+    format!("http://www.last.fm/api/auth/?api_key={api_key}&cb={cb}")
+}
+
+#[derive(Serialize, Deserialize)]
+struct JwtClaims {
+    fmname: String,
+    exp: i64,
+}
+
+fn sign_cookie(
+    key: &Hmac<Sha512>,
+    username: String,
+    days: i64,
+    jar: CookieJar,
+) -> Result<CookieJar, AppError> {
+    let mut t = time::OffsetDateTime::now_utc();
+    t += time::Duration::days(days);
+    let claim = JwtClaims {
+        fmname: username,
+        exp: t.unix_timestamp(),
+    };
+    let session = claim.sign_with_key(key).map_err(AppError::internal)?;
+
+    let cookie = Cookie::build(("session", session)).path("/").expires(t);
+
+    let jar = jar.add(cookie);
+
+    Ok(jar)
 }
 
 #[derive(Deserialize)]
 struct SigninQuery {
     token: String,
 }
-async fn signin(State(state): State<SharedState>, Query(query): Query<SigninQuery>) -> String {
+async fn signin(
+    State(state): State<SharedState>,
+    Query(query): Query<SigninQuery>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, AppError> {
     let token = query.token;
 
     let session = state
         .lastfm
         .authenticate(&token)
         .await
-        .expect("can authenticate");
+        .map_err(AppError::LastFm)?;
 
     sqlx::query!(
         "INSERT INTO user
@@ -261,22 +326,23 @@ async fn signin(State(state): State<SharedState>, Query(query): Query<SigninQuer
     )
     .execute(&state.pool)
     .await
-    .expect("could insert");
+    .map_err(|x| AppError::Internal(Box::new(x)))?;
 
-    "success!".into()
+    let jar = sign_cookie(&state.config.jwt_key, session.name, 4 * 7, jar)?;
+
+    Ok((jar, Redirect::to("/")))
 }
 
+#[axum::debug_handler]
 async fn get_top_albums(
     State(state): State<SharedState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    state
+    let x = state
         .lastfm
         .top_albums(query.get("user").ok_or(AppError::MissingParam("user"))?)
-        .send()
-        .await
-        .map_err(AppError::LastFm)
-        .map(Json)
+        .send();
+    x.await.map_err(AppError::LastFm).map(Json)
 }
 
 #[derive(Serialize, TS)]
@@ -317,13 +383,23 @@ struct NewGameQuery {
 }
 
 async fn newgame(
+    jar: CookieJar,
     Query(query): Query<NewGameQuery>,
     State(state): State<SharedState>,
 ) -> Result<Json<NewGameResult>, AppError> {
-    log::info!("creating new game (artist)");
+    // TODO: user middleware
+    let user = query.user.or(jar.get("session").and_then(|session| {
+        session
+            .value()
+            .verify_with_key(&state.config.jwt_key)
+            .ok()
+            .map(|claims: JwtClaims| claims.fmname)
+    }));
+    let user = user.ok_or(AppError::NoUser)?;
+    log::info!("creating new game (artist) for {user}");
     let resp = state
         .lastfm
-        .top_artists(query.user.as_deref().unwrap_or("hydehsmf"))
+        .top_artists(&user)
         .send()
         .await
         .map_err(AppError::LastFm)?;
