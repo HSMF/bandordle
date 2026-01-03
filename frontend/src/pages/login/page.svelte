@@ -12,7 +12,7 @@
       <a class="underline" href={value}>Login Via Last.fm</a>
 
       <label
-        >or continue as user <input
+        >or continue as user (enter your Last.FM username) <input
           type="text"
           class="outline rounded-xl px-2"
           bind:value={user}
