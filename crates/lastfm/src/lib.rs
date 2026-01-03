@@ -98,6 +98,17 @@ pub struct Client {
     base_url: String,
 }
 
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("shared_secret", &"<shared_secret>")
+            .field("api_key", &"<api_key>")
+            .field("client", &self.client)
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
 impl Client {
     pub fn new(shared_secret: String, api_key: String) -> Self {
         Self {
